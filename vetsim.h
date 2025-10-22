@@ -373,7 +373,7 @@ struct simControllers
 {
 	int allocated;
 	char ipAddr[256];
-	char version[32];
+	char version[256];
 };
 // Data Structure of Shared memory file
 struct simmgr_shm

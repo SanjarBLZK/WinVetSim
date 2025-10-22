@@ -1421,11 +1421,11 @@ sendStatus(void)
 			_itoa_s(i + 1, buffer, 256, 10);
 			string reply;
 			reply = simmgr_shm->simControllers[i].ipAddr;
-			if (strlen(simmgr_shm->simControllers[i].version))
-			{
-				reply.append(" Version ");
-				reply.append(simmgr_shm->simControllers[i].version);
-			}
+			//if (strlen(simmgr_shm->simControllers[i].version))
+			//{
+			//	reply.append(" Version ");
+			//	reply.append(simmgr_shm->simControllers[i].version);
+			//}
 			makejson(buffer, reply);
 		}
 	}

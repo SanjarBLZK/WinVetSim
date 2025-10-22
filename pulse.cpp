@@ -599,7 +599,7 @@ pulseTask(void )
 					printf("ReOpened: %s\n", newIpAddr);
 					// Send the Status Port Number to the listener
 					sendStatusPort(i);
-					getControllerVersion(i);
+
 					break;
 				}
 			}
@@ -940,43 +940,252 @@ pulseProcessChild(void)
 	exit(204);
 }
 
-#pragma comment(lib, "Ws2_32.lib")
+#include <curl/curl.h>
+#include <string>
+
+// Callback for libcurl to write received data into a std::string
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp)
+{
+	size_t totalSize = size * nmemb;
+	std::string* str = (std::string*)userp;
+	str->append((char*)contents, totalSize);
+	std::cout << "ctlstatus.cgi returns " << size << std::endl << contents << std::endl;
+
+	return totalSize;
+}
+
+// Reads a web page using libcurl and returns the contents as a std::string
+std::string ReadWebPage(const std::string& url)
+{
+	CURL* curl = curl_easy_init();
+	std::string response;
+
+	if (curl)
+	{
+		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // Follow redirects
+
+		CURLcode res = curl_easy_perform(curl);
+		curl_easy_cleanup(curl);
+
+		if (res != CURLE_OK)
+		{
+			// http://192.168.1.136/cgi-bin/ctlstatus.cgi
+			// Optionally handle error
+			std::cout << "CURL returns " << curl_easy_strerror(res) << std::endl;
+			std::cout << "CURL URL " << url << std::endl;
+			return "";
+		}
+	}
+	// std::cout << "ReadWebPage " << std::endl << response << std::endl;
+	return response;
+}
+
+#include <nlohmann/json.hpp>
+#include <algorithm>
+
+using json = nlohmann::json;
+
+/*
+ * Try to parse a full JSON text and extract the "simCtlVersion" value.
+ * If the value is an object/array it will be serialized to a string.
+ * Returns true if extraction succeeded and `out` contains the value.
+ */
+static bool try_parse_full_json_for_simCtlVersion(const std::string& text, std::string& out)
+{
+	try {
+		auto j = json::parse(text);
+		if (j.contains("simCtlVersion")) {
+			if (j["simCtlVersion"].is_string())
+				out = j["simCtlVersion"].get<std::string>();
+			else
+				out = j["simCtlVersion"].dump();
+			return true;
+		}
+	}
+	catch (...) {
+		// not a pure JSON document
+	}
+	return false;
+}
+
+/*
+ * Locate the token "simCtlVersion" inside an arbitrary page (HTML or JS),
+ * extract the JSON/value that follows the ':' and return it as a string.
+ * Handles values that are:
+ *   - JSON object/array (starts with '{' or '[') -> returns the serialized JSON substring
+ *   - JSON/string literal (starts with '"') -> returns the string content unquoted
+ *   - bare token/number -> returns the token text
+ */
+static bool extract_simCtlVersion_from_mixed_text(const std::string& page, std::string& out)
+{
+	const char* token = "simCtlVersion";
+	auto pos = page.find(token);
+	if (pos == std::string::npos) return false;
+
+	// find the ':' after the token
+	pos = page.find(':', pos + strlen(token));
+	if (pos == std::string::npos) return false;
+
+	// advance to first non-space
+	pos++;
+	while (pos < page.size() && isspace((unsigned char)page[pos])) pos++;
+	if (pos >= page.size()) return false;
+
+	char c = page[pos];
+	if (c == '{' || c == '[') {
+		// extract balanced JSON block
+		char open = c;
+		char close = (open == '{') ? '}' : ']';
+		size_t i = pos;
+		int depth = 0;
+		for (; i < page.size(); ++i) {
+			if (page[i] == open) depth++;
+			else if (page[i] == close) {
+				depth--;
+				if (depth == 0) {
+					out = page.substr(pos, i - pos + 1);
+					// validate by parsing
+					try {
+						auto j = json::parse(out);
+						// if j is object/array and contains simCtlVersion nested, try to extract
+						if (j.is_object() && j.contains("simCtlVersion")) {
+							if (j["simCtlVersion"].is_string())
+								out = j["simCtlVersion"].get<std::string>();
+							else
+								out = j["simCtlVersion"].dump();
+						}
+					}
+					catch (...) {
+						// accept raw substring anyway
+					}
+					return true;
+				}
+			}
+			// skip over string literals to avoid matching braces inside quotes
+			else if (page[i] == '"') {
+				// skip quoted string
+				i++;
+				for (; i < page.size(); ++i) {
+					if (page[i] == '\\') { i++; continue; }
+					if (page[i] == '"') break;
+				}
+			}
+		}
+		return false;
+	}
+	else if (c == '"') {
+		// quoted string
+		size_t i = pos + 1;
+		std::string tmp;
+		for (; i < page.size(); ++i) {
+			if (page[i] == '\\' && i + 1 < page.size()) {
+				// handle simple escape sequences
+				i++;
+				switch (page[i]) {
+				case 'n': tmp.push_back('\n'); break;
+				case 'r': tmp.push_back('\r'); break;
+				case 't': tmp.push_back('\t'); break;
+				case '\\': tmp.push_back('\\'); break;
+				case '"': tmp.push_back('"'); break;
+				default: tmp.push_back(page[i]); break;
+				}
+			}
+			else if (page[i] == '"') {
+				out = tmp;
+				return true;
+			}
+			else {
+				tmp.push_back(page[i]);
+			}
+		}
+		return false;
+	}
+	else {
+		// bare token or number: read until comma, semicolon, newline or non-token char
+		size_t i = pos;
+		for (; i < page.size(); ++i) {
+			char cc = page[i];
+			if (cc == ',' || cc == ';' || cc == '\n' || cc == '\r' || cc == '<' || cc == '}' || cc == ']') break;
+		}
+		if (i > pos) {
+			out = page.substr(pos, i - pos);
+			// trim trailing spaces
+			out.erase(out.find_last_not_of(" \t\r\n") + 1);
+			// trim leading spaces
+			out.erase(0, out.find_first_not_of(" \t\r\n"));
+			// remove optional quotes
+			if (!out.empty() && out.front() == '"' && out.back() == '"') {
+				out = out.substr(1, out.size() - 2);
+			}
+			return !out.empty();
+		}
+		return false;
+	}
+}
+
+
+static bool extract_simCtlVersion(const std::string& page, std::string& out)
+{
+	// Strategy 1: page is pure JSON
+	if (try_parse_full_json_for_simCtlVersion(page, out)) return true;
+
+	// Strategy 2: page contains an embedded JSON snippet or JS variable
+	if (extract_simCtlVersion_from_mixed_text(page, out)) return true;
+
+	// Strategy 3: try to locate a JSON substring that contains simCtlVersion key explicitly
+	auto keyPos = page.find("\"simCtlVersion\"");
+	if (keyPos != std::string::npos) {
+		// try to find open brace before key and parse object
+		auto bracePos = page.rfind('{', keyPos);
+		if (bracePos != std::string::npos) {
+			// attempt to find matching closing brace
+			size_t i = bracePos;
+			int depth = 0;
+			for (; i < page.size(); ++i) {
+				if (page[i] == '{') depth++;
+				else if (page[i] == '}') {
+					depth--;
+					if (depth == 0) {
+						std::string sub = page.substr(bracePos, i - bracePos + 1);
+						try {
+							auto j = json::parse(sub);
+							if (j.contains("simCtlVersion")) {
+								if (j["simCtlVersion"].is_string()) out = j["simCtlVersion"].get<std::string>();
+								else out = j["simCtlVersion"].dump();
+								return true;
+							}
+						} catch (...) { }
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	return false;
+}
 
 void getControllerVersion(int index) {
-	SOCKET fd;
-	int len;
-	char pbuf[64];
-
-
 	if (listeners[index].allocated == 1)
 	{
-		sprintf_s(pbuf, "%s", "version");
-		len = strlen(pbuf);
-		fd = listeners[index].cfd;
-		len = send(fd, pbuf, len, 0);
-		if (len < 0) // This detects closed or disconnected listeners.
+		char url[128];
+		sprintf_s(url, "http://%s/%s", simmgr_shm->simControllers[index].ipAddr, "cgi-bin/ctlstatus.cgi");
+		std::string page = ReadWebPage(url);
+		std::string version;
+		bool sts = extract_simCtlVersion(page, version);
+		if ( sts )
 		{
-			// send failed
-			return;
+			// Store the version string
+			strncpy_s(simmgr_shm->simControllers[index].version, STR_SIZE, version.c_str(), STR_SIZE - 1);
+			cout << "Controller " << index << " simCtlVersion extraction " << ": " << version << std::endl;
 		}
 		else
 		{
-			// Read back the version
-			char buffer[BUF_SIZE];
-			int result;
-			result = recv(fd, buffer, sizeof(buffer) - 1, 0);
-			if (result > 0) {
-				buffer[result] = '\0'; // Null-terminate the buffer
-				sprintf_s(listeners[index].version, "%s", buffer);
-				printf("Controller Version: %s  %s\n", buffer, listeners[index].version);
-				sprintf_s(simmgr_shm->simControllers[index].version, "%s", buffer);
-			}
-			else if (result == 0) {
-				std::cout << "Connection closed by server." << std::endl;
-			}
-			else {
-				std::cerr << "Receive failed: " << WSAGetLastError() << std::endl;
-			}
+			cout << "Controller " << index << " simCtlVersion extraction " << "failed" << std::endl;
 		}
+
 	}
 }

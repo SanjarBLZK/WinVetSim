@@ -41,7 +41,6 @@ getBuildDate(void)
 	char date[] = __DATE__; // "Mmm dd yyyy"
 	char time[] = __TIME__; // "hh:mm:ss"
 	uint64_t dcode;
-	errno_t sts;
 	uint64_t month;
 	printf("Build Date %s %s  ", date, time);
 
