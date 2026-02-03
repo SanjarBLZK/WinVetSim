@@ -14,7 +14,7 @@
  * This code distributed under BSD LICENSE STYLE.
  */
 
-#include <afxwin.h>
+// #include <afxwin.h>  // Commented out - MFC not available in BuildTools
 #include <tchar.h>
 #include <wininet.h>
 
