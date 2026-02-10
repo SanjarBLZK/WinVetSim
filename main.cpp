@@ -124,7 +124,7 @@ setWVSVersion(void)
 //#include <string.h>
 //#include <tchar.h>
 #include <strsafe.h>
-// #include <afxwin.h>  // Commented out - MFC not available in BuildTools
+#include <afxwin.h>
 //#include <tlhelp32.h>
 
 // C RunTime Header Files
