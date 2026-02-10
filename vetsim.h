@@ -29,7 +29,7 @@
 #pragma comment(lib, "Ws2_32.lib") 
 
 #include <Windows.h>
-// #include <atlbase.h>  // Commented out - ATL not available in BuildTools
+#include <atlbase.h>
 #include <iostream>
 #include <winbase.h>
 #include <direct.h>
